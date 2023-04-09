@@ -1,37 +1,13 @@
 use rand::Rng;
-use std::{
-    io::{stdin, stdout},
-    vec,
-};
-use termion::{color, event::Key, input::TermRead, raw::IntoRawMode, style};
+use std::{io::stdin, vec};
+use termion::{event::Key, input::TermRead};
+
+use crate::{cell::Cell, terminal::Terminal};
+
+const ROW_OFFSET: usize = 2;
+const COL_OFFSET: usize = 2;
 
 #[derive(Clone, PartialEq)]
-enum Cell {
-    Hidden,
-    Marked,
-    Mine,
-    Num(u8),
-}
-
-impl Cell {
-    pub fn get_view(&self) -> String {
-        match self {
-            Cell::Hidden => format!("{} {}", style::Bold, style::Reset),
-            Cell::Marked => format!("{}.{}", style::Bold, style::Reset),
-            Cell::Mine => format!(
-                "{}{}*{}{}",
-                style::Bold,
-                color::Bg(color::Red),
-                color::Bg(color::Reset),
-                style::Reset
-            ),
-            Cell::Num(i) => format!("{}{}{}", style::Bold, i, style::Reset),
-        }
-    }
-}
-
-const ROW_OFFSET: i8 = -1;
-const COL_OFFSET: i8 = -1;
 
 struct Position {
     pub row: usize,
@@ -46,7 +22,7 @@ enum GameStatus {
 }
 
 pub struct Game {
-    size: u8,
+    size: usize,
     mines: Vec<Vec<i8>>,
     board: Vec<Vec<Cell>>,
     curr_pos: Position,
@@ -54,30 +30,47 @@ pub struct Game {
     mine_count: usize,
     flag_count: usize,
     status: GameStatus,
+    terminal: Terminal,
 }
 
 impl Game {
-    pub fn new(size: u8) -> Self {
+    pub fn new(size: usize) -> Self {
         let required_mines = size;
         Self {
             size,
             flag_count: 0,
-            mine_count: required_mines as usize,
+            mine_count: required_mines,
             mines: Self::generate_mines(size, required_mines),
-            board: vec![vec![Cell::Hidden; size.into()]; size.into()],
-            curr_pos: Position { row: 1, col: 1 },
-            count_hidden_cells: (size * size) as usize,
+            board: vec![vec![Cell::Hidden; size]; size],
+            curr_pos: Position {
+                row: ROW_OFFSET,
+                col: COL_OFFSET,
+            },
+            count_hidden_cells: size * size,
             status: GameStatus::Progress,
+            terminal: Terminal::new(),
         }
     }
 
-    fn generate_mines(size: u8, required_mines: u8) -> Vec<Vec<i8>> {
-        let mut mines = vec![vec![0; size.into()]; size.into()];
+    fn reset_game(&mut self) {
+        let state = Self::new(self.size);
+
+        self.flag_count = state.flag_count;
+        self.mine_count = state.mine_count;
+        self.mines = state.mines;
+        self.board = state.board;
+        self.curr_pos = state.curr_pos;
+        self.count_hidden_cells = state.count_hidden_cells;
+        self.status = state.status;
+    }
+
+    fn generate_mines(size: usize, required_mines: usize) -> Vec<Vec<i8>> {
+        let mut mines = vec![vec![0; size]; size];
         let mut count = 0;
 
         while count < required_mines {
-            let row: usize = rand::thread_rng().gen_range(0..size).into();
-            let col: usize = rand::thread_rng().gen_range(0..size).into();
+            let row: usize = rand::thread_rng().gen_range(0..size);
+            let col: usize = rand::thread_rng().gen_range(0..size);
 
             if mines[row][col] != -1 {
                 count += 1;
@@ -85,8 +78,8 @@ impl Game {
             }
         }
 
-        for row in 0..(size as usize) {
-            for col in 0..(size as usize) {
+        for row in 0..size {
+            for col in 0..size {
                 if row == 0 && col == 0 {
                 } else if row == 0 {
                     let left = (row, col - 1);
@@ -132,8 +125,8 @@ impl Game {
     }
 
     pub fn run(&mut self) {
-        self.set_cursor_pos(1, 1);
-        let _stdout = stdout().into_raw_mode().unwrap();
+        self.terminal.enter_alternate_screen();
+        self.set_cursor_pos(ROW_OFFSET, COL_OFFSET);
         let stdin = stdin();
 
         self.update();
@@ -142,54 +135,66 @@ impl Game {
                 Key::Char('q') => {
                     break;
                 }
+                Key::Char('r') => {
+                    self.reset_game();
+                }
+                Key::Char(key) => self.process_char(key),
                 Key::Up => {
-                    if self.curr_pos.row > 1 {
+                    if self.curr_pos.row > ROW_OFFSET {
                         self.curr_pos.row = self.curr_pos.row.saturating_sub(1);
                     }
                     self.set_cursor_pos(self.curr_pos.row, self.curr_pos.col);
                 }
                 Key::Down => {
-                    if self.curr_pos.row < self.size.into() {
+                    if self.curr_pos.row < (ROW_OFFSET + self.size - 1) {
                         self.curr_pos.row = self.curr_pos.row.saturating_add(1);
                     }
                     self.set_cursor_pos(self.curr_pos.row, self.curr_pos.col);
                 }
                 Key::Left => {
-                    if self.curr_pos.col > 1 {
+                    if self.curr_pos.col > COL_OFFSET {
                         self.curr_pos.col = self.curr_pos.col.saturating_sub(1);
                     }
                     self.set_cursor_pos(self.curr_pos.row, self.curr_pos.col);
                 }
                 Key::Right => {
-                    if self.curr_pos.col < self.size.into() {
+                    if self.curr_pos.col < (COL_OFFSET + self.size - 1) {
                         self.curr_pos.col = self.curr_pos.col.saturating_add(1);
                     }
                     self.set_cursor_pos(self.curr_pos.row, self.curr_pos.col);
-                }
-                Key::Char('\n') => {
-                    if self.status == GameStatus::Progress {
-                        let pos = self.get_curr_cell_pos();
-                        self.reveal_cell(pos.row, pos.col);
-                    }
-                }
-                Key::Char(_) => {
-                    if self.status == GameStatus::Progress {
-                        let pos = self.get_curr_cell_pos();
-                        self.mark_flag(pos.row, pos.col);
-                    }
                 }
                 _ => {}
             }
             if self.count_hidden_cells == 0 && self.status == GameStatus::Progress {
                 self.status = GameStatus::Won;
+                self.reveal_mines();
             }
             self.update();
+        }
+        self.terminal.leave_alternate_screen();
+    }
+
+    fn process_char(&mut self, c: char) {
+        match c {
+            '\n' => {
+                if self.status == GameStatus::Progress {
+                    let pos = self.get_curr_cell_pos();
+                    self.reveal_cell(pos.row, pos.col);
+                }
+            }
+            'f' => {
+                if self.status == GameStatus::Progress {
+                    let pos = self.get_curr_cell_pos();
+                    self.mark_flag(pos.row, pos.col);
+                }
+            }
+            _ => {}
         }
     }
 
     fn get_curr_cell_pos(&self) -> Position {
-        let row: usize = ((self.curr_pos.row as i8) + ROW_OFFSET) as usize;
-        let col: usize = ((self.curr_pos.col as i8) + COL_OFFSET) as usize;
+        let row: usize = self.curr_pos.row - ROW_OFFSET;
+        let col: usize = self.curr_pos.col - COL_OFFSET;
         Position { row, col }
     }
 
@@ -200,23 +205,41 @@ impl Game {
     }
 
     fn render(&mut self) {
-        let mut frame = String::new();
+        let mut frame: Vec<String> = vec![];
 
         let header = match self.status {
-            GameStatus::Progress => format!("{}/{} {}", self.flag_count, self.mine_count, self.count_hidden_cells),
-            GameStatus::Won => format!("Won"),
-            GameStatus::Lost => format!("Lost"),
+            GameStatus::Progress => format!(
+                "{}/{} {}",
+                self.flag_count, self.mine_count, self.count_hidden_cells
+            ),
+            GameStatus::Won => "Won".to_string(),
+            GameStatus::Lost => "Lost".to_string(),
         };
 
-        frame.push_str(format!("{header}\n\r").as_str());
+        frame.push(header);
+
+        frame.push("_".repeat(self.size + 2));
 
         for v in self.board.iter() {
+            let mut r = String::new();
+            r.push('|');
             for c in v.iter() {
-                frame.push_str(c.get_view().as_str());
+                r.push_str(c.get_view().as_str());
             }
-            frame.push_str("\n\r");
+            r.push('|');
+            frame.push(r);
         }
-        println!("{}", frame);
+        frame.push("¯".repeat(self.size + 2));
+        // frame.push_str(format!("\n\r({}/{})", self.curr_pos.row, self.curr_pos.col).as_str());
+        if self.status == GameStatus::Progress {
+            frame.push("Reveal: Enter".to_string());
+            frame.push("Flag  : f".to_string());
+        } else {
+            frame.push("Play Again: r".to_string());
+            frame.push("Quit Game : q".to_string());
+        }
+
+        println!("{}", frame.join("\r\n"));
     }
 
     fn set_cursor_pos(&mut self, row: usize, col: usize) {
@@ -224,63 +247,67 @@ impl Game {
     }
 
     fn can_flag(&self) -> bool {
-        return self.flag_count < self.mine_count;
+        self.flag_count < self.mine_count
     }
 
     fn mark_flag(&mut self, row: usize, col: usize) {
         if !self.can_flag() {
             return;
         }
-        match self.board[row][col]{
+        match self.board[row][col] {
             Cell::Hidden => {
                 self.count_hidden_cells -= 1;
                 self.flag_count += 1;
                 self.board[row][col] = Cell::Marked;
-            },
+            }
             Cell::Marked => {
                 self.flag_count -= 1;
                 self.board[row][col] = Cell::Hidden;
                 self.count_hidden_cells += 1;
-            },
+            }
             Cell::Mine => todo!(),
-            Cell::Num(_) => {},
+            Cell::Num(_) => {}
         }
     }
 
     fn reveal_cell(&mut self, row: usize, col: usize) {
-        if self.status != GameStatus::Progress{
+        if self.status != GameStatus::Progress {
             return;
         }
-        match self.board[row][col]{
+        match self.board[row][col] {
             Cell::Hidden => {
-                self.count_hidden_cells -= 1;
                 if self.mines[row][col] == -1 {
                     self.game_lost();
                 } else {
-                    flood_fill(self.mines.as_ref(), &mut self.board, row as i32, col as i32);
+                    self.count_hidden_cells -=
+                        flood_fill(self.mines.as_ref(), &mut self.board, row as i32, col as i32);
                 }
-            },
+            }
             Cell::Marked => {
                 self.flag_count -= 1;
                 self.board[row][col] = Cell::Hidden;
                 if self.mines[row][col] == -1 {
                     self.game_lost();
                 } else {
-                    flood_fill(self.mines.as_ref(), &mut self.board, row as i32, col as i32);
+                    self.count_hidden_cells += 1;
+                    self.count_hidden_cells -=
+                        flood_fill(self.mines.as_ref(), &mut self.board, row as i32, col as i32);
                 }
-            },
+            }
             Cell::Mine => todo!(),
-            Cell::Num(_) => {
-                return;
-            },
+            Cell::Num(_) => {}
         }
     }
 
     fn game_lost(&mut self) {
         self.status = GameStatus::Lost;
 
-        for row in 0..(self.size as usize) {
-            for col in 0..(self.size as usize) {
+        self.reveal_mines();
+    }
+
+    fn reveal_mines(&mut self) {
+        for row in 0..self.size {
+            for col in 0..self.size {
                 if self.mines[row][col] == -1 {
                     self.board[row][col] = Cell::Mine;
                 }
@@ -291,15 +318,16 @@ impl Game {
 
 const DIR: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
-fn flood_fill(mines: &Vec<Vec<i8>>, board: &mut [Vec<Cell>], row: i32, col: i32) {
+fn flood_fill(mines: &Vec<Vec<i8>>, board: &mut [Vec<Cell>], row: i32, col: i32) -> usize {
     if mines[row as usize][col as usize] == -1 {
-        return;
+        return 0;
     }
 
+    let mut count = 1;
     board[row as usize][col as usize] = Cell::Num(mines[row as usize][col as usize] as u8);
 
     if mines[row as usize][col as usize] != 0 {
-        return;
+        return count;
     }
 
     for (i, j) in DIR {
@@ -310,7 +338,8 @@ fn flood_fill(mines: &Vec<Vec<i8>>, board: &mut [Vec<Cell>], row: i32, col: i32)
             && mines[r as usize][c as usize] == 0
             && board[r as usize][c as usize] == Cell::Hidden
         {
-            flood_fill(mines, board, r, c);
+            count += flood_fill(mines, board, r, c);
         }
     }
+    count
 }

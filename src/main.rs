@@ -1,4 +1,6 @@
+mod cell;
 mod game;
+mod terminal;
 
 use game::Game;
 
